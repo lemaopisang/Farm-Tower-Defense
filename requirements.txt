@@ -1,0 +1,2 @@
+# This project relies solely on the Python standard library.
+# like basically nothing lolz what do u expect a hacking running script???

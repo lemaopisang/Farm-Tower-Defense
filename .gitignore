@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Tests
+/test_*.py
+/tests/
+
+# Web demo
+/web_app/
+
+# Dart file
+/battle-farm-saga.dart
