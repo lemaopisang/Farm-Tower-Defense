@@ -311,7 +311,7 @@ class PlayerFarm(Farm):
             ),
             Skill(
                 "Stampede",
-                "Strike for 1.3x attack power, reduce enemy next attack, and you take 20% recoil.",
+                "Strike for 1.3x attack power, reduce enemy next attack, and you take 30% recoil.",
                 lambda p, e, io: self._skill_stampede_buffed(p, e, io),
                 cooldown=5,
             ),
@@ -495,6 +495,9 @@ class Game:
                 self.io.write("- Boss haves names and ASCII art when they appeared!!")
                 self.io.write("- Fixed damage reduction and Temporary Buff")
                 self.io.write("- Rebalance Endless mode scaling on further waves")
+                self.io.write("- Endless enemies now gets rid of ur HP based on your max HP.")
+                self.io.write("- Lost Cow now shows the shield amount scaled by 3× max HP, y not?")
+                self.io.write("- Strange Seed and Konami activations now spit out the buff numbers.")
                 input("[Press Enter to go back.]")
                 continue
             input("Just pick anything bro dont mess this one up🥀")
@@ -599,6 +602,9 @@ class Game:
             # in-battle actions
             self._show_options(enemy)
 
+            if self.endless_mode and enemy.is_alive:
+                self._maybe_trigger_endless_gimmick(enemy)
+
             # enemy action
             if enemy.is_alive:
                 # handle stun
@@ -700,6 +706,7 @@ class Game:
         except Exception:
             return
         stacks, _ = self.player.passives.get(name, (0, stackable))
+        initial_stacks = stacks
         if stacks >= 3:
             return
         # Auto-apply passive. Small chance for an extra stack, tiny chance for backlash.
@@ -708,8 +715,8 @@ class Game:
         self.player.passives[name] = (stacks, stackable)
         if name == "Ember's Fury":
             self.player.attack_power += 5
-        # 20% chance to immediately grant +1 extra stack if available
-        if stackable and stacks < 3 and self.rng.random() < 0.2:
+        # 20% chance to immediately grant +1 extra stack if available (but not on first acquisition)
+        if stackable and initial_stacks > 0 and stacks < 3 and self.rng.random() < 0.2:
             stacks = min(3, stacks + 1)
             self.player.passives[name] = (stacks, stackable)
             if name == "Ember's Fury":
@@ -768,6 +775,7 @@ class Game:
         self.io.write("- Enemies scale harder every wave.")
         self.io.write("- Shop items upgrade to end-game versions.")
         self.io.write("- Random events expand and can chain.")
+        self.io.write("- Endless foes now siphon a sliver of your max HP each turn.")
         self.io.write("Choose to continue or completely stop.")
         answer = (self.io.prompt("Enter Endless Mode? (y/n): ") or "n").strip().lower()
         return answer in ("y", "yes")
@@ -898,6 +906,7 @@ class Game:
                             self.player.max_hp += hp_buff
                             self.player.health += hp_buff
                             self.player.add_new_skill(self.io)
+                            self.io.write(f"Stats surge: Attack +{atk_buff}, Max HP +{hp_buff} (health +{hp_buff}).")
                             self.io.write(f"Coins: {self.player.coins} | Gold: {self.player.gold}")
                         else:
                             self.io.write("The sequence fizzles. The fragment resists activation.")
@@ -929,15 +938,6 @@ class Game:
         self.io.write(f"\n✨ Random Event: {chosen}!")
         self._apply_event(chosen)
 
-        if self.rng.random() < 0.25:
-            bad_pool = [event for event in BAD_EVENTS if event not in trigger_used]
-            if not bad_pool:
-                bad_pool = list(BAD_EVENTS)
-            bad = self.rng.choice(bad_pool)
-            self.used_events.add(bad)
-            trigger_used.add(bad)
-            self._apply_event(bad)
-
         if self.rng.random() < 0.18:
             self.io.write("\n✨ Huh? Another Random Event?!")
             extra_events = self._event_pool()
@@ -949,6 +949,30 @@ class Game:
             trigger_used.add(extra)
             self.io.write(f"✨ Random Event: {extra}!")
             self._apply_event(extra)
+
+    def _maybe_trigger_endless_gimmick(self, enemy: Farm) -> None:
+        assert self.player is not None
+        last_turn = getattr(enemy, 'last_gimmick_turn', -999)
+        if self.turn_count - last_turn < 3:
+            return
+
+        base = 0.24 if isinstance(enemy, Boss) else 0.14
+        wave_scale = max(0, self.wave - STORY_END_WAVE)
+        chance = base + min(0.18, wave_scale * 0.01)
+        if self.rng.random() >= chance:
+            return
+
+        if isinstance(enemy, Boss):
+            percent = 0.06 + min(0.12, wave_scale * 0.002)
+            label = "Boss Siphon"
+        else:
+            percent = 0.04 + min(0.08, wave_scale * 0.0015)
+            label = "Endless Hunger"
+
+        damage = max(1, round(self.player.max_hp * percent))
+        self.player.take_damage(damage)
+        self.io.write(f"🔻 {enemy.name} triggers {label}, draining {damage} HP ({percent * 100:.1f}% of max)!")
+        setattr(enemy, 'last_gimmick_turn', self.turn_count)
 
     def _event_pool(self) -> list[str]:
         events = list(RANDOM_EVENTS) + list(BAD_EVENTS)
@@ -1009,16 +1033,22 @@ class Game:
 
     def _event_lost_cow(self, _: str) -> None:
         self.io.write("A lost cow returns with a kind moo and licks your wounds.")
-        heal = self.player.heal_percent(self._scaled_percent(1 / 6))
+        base_percent = self._scaled_percent(0.12)
+        shield_percent = min(0.45, base_percent * 3)
+        shield = max(1, round(self.player.max_hp * shield_percent))
+        self.player.irrigation_shield = max(self.player.irrigation_shield, shield)
         coins = self.rng.randint(1, 3)
         self.player.coins += coins
-        self.io.write(f"You regain {heal} HP and find {coins} coins in the pasture.")
+        self.io.write(
+            f"The cow's milk forms a gentle shield ({shield} damage absorbed, ~{shield_percent * 100:.1f}% of max) and you find {coins} coins in the pasture."
+        )
 
     def _event_strange_seed(self, _: str) -> None:
         self.io.write("A strange seed sprouts, making your farm heartier.")
         inc = 15
         self.player.max_hp += inc
         self.player.health += inc
+        self.io.write(f"Strange Seed: +{inc} max HP (now {self.player.max_hp}) and your health grows along with it.")
 
     def _event_trap(self, _: str) -> None:
         self.io.write("A hidden trap snaps at your heels!")
